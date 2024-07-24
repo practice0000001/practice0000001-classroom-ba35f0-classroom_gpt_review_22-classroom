@@ -1,0 +1,104 @@
+name: Code Review From ChatGPT
+
+permissions:
+  contents: read
+  pull-requests: write
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+
+jobs:
+  code-review:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v2
+
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y build-essential cmake git python3 python3-pip
+        pip3 install openai
+
+    - name: Clone Google Test
+      run: |
+        cd /usr/src
+        sudo git clone https://github.com/google/googletest.git
+        cd googletest
+        sudo mkdir -p build
+        cd build
+        sudo cmake .. -DCMAKE_CXX_STANDARD=14
+        sudo make
+
+    - name: Copy Google Test libraries
+      run: |
+        sudo cp /usr/src/googletest/build/lib/*.a /usr/lib
+
+    - name: Configure CMake
+      run: |
+        mkdir -p build
+        cd build
+        cmake ..
+
+    - name: Build the project
+      run: |
+        cd build
+        make
+
+    - name: Run tests
+      id: run_tests
+      run: |
+        cd build
+        ctest --output-on-failure > result.log 2>&1
+        cat result.log
+      continue-on-error: true
+
+    - name: Check if result.log exists
+      run: |
+        if [ -f build/result.log ]; then
+          echo "result.log found"
+        else
+          echo "result.log not found"
+          exit 1
+        fi
+
+    - name: Analyze with ChatGPT
+      if: always()
+      run: |
+        python3 -c "
+import openai
+import os
+
+openai.api_key = os.getenv('OPENAI_API_KEY')
+
+if os.path.exists('build/result.log'):
+    with open('build/result.log', 'r') as file:
+        test_results = file.read()
+
+    response = openai.Completion.create(
+      engine='gpt-3.5-turbo',
+      prompt=f'테스트 결과를 분석하고 피드백을 제공합니다: {test_results}',
+      max_tokens=500
+    )
+
+    feedback = response.choices[0].text.strip()
+    with open('feedback.log', 'w') as file:
+        file.write(feedback)
+else:
+    print('result.log 파일이 없습니다.')
+"
+
+    - name: Upload feedback
+      uses: actions/upload-artifact@v2
+      with:
+        name: feedback
+        path: feedback.log
+
+    - name: Comment on PR with feedback
+      if: steps.run_tests.outcome == 'failure'
+      uses: marocchino/sticky-pull-request-comment@v2
+      with:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        path: feedback.log
